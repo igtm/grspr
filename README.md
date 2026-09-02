@@ -56,7 +56,7 @@ gh api repos/igtm/grspr/contents/install.sh \
 Choose a version or install directory:
 
 ```sh
-./install.sh -v=0.0.1
+./install.sh -v=0.0.2
 ./install.sh -b=/usr/local/bin
 ```
 
