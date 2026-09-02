@@ -1,0 +1,33 @@
+[package]
+name = "grspr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A fast, local-first TUI for grasping pull request diffs"
+license = "Apache-2.0"
+repository = "https://github.com/igtm/grspr"
+keywords = ["git", "pull-request", "review", "tui", "diff"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "grspr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+directories = "6.0"
+futures = "0.3"
+nucleo-matcher = "0.3"
+ratatui = "0.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["macros", "process", "rt-multi-thread", "io-util", "sync", "time"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+tempfile = "3.20"
