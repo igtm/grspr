@@ -19,6 +19,7 @@ use syntect::{
 use crate::{
     app::{App, Focus, Overlay},
     diff::DiffLineKind,
+    git::PullRequestStatus,
     review::ReviewStatus,
 };
 
@@ -137,6 +138,10 @@ fn render_files(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_diff(frame: &mut Frame, area: Rect, app: &App) {
+    if app.files.is_empty() {
+        render_empty_diff(frame, area, app);
+        return;
+    }
     let path = app
         .files
         .get(app.selected_file)
@@ -225,6 +230,87 @@ fn render_diff(frame: &mut Frame, area: Rect, app: &App) {
             horizontal: 0,
         }),
         &mut scrollbar_state,
+    );
+}
+
+fn render_empty_diff(frame: &mut Frame, area: Rect, app: &App) {
+    let range = format!("{}...{}", app.repo.base, app.repo.head);
+    let review_head = if app.repo.head == "HEAD" {
+        &app.repo.branch
+    } else {
+        &app.repo.head
+    };
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "No changed files",
+            Style::new().fg(YELLOW).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("The committed Git diff for {range} is empty."),
+            Style::new().fg(MUTED),
+        )),
+        Line::from(""),
+    ];
+    match &app.pull_request_status {
+        PullRequestStatus::Checking => lines.push(Line::from(Span::styled(
+            format!("Checking GitHub PR for review head {review_head}…"),
+            Style::new().fg(ACCENT),
+        ))),
+        PullRequestStatus::Found(info) => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("PR #{} exists", info.number),
+                    Style::new().fg(GREEN).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(" · {}", info.title)),
+            ]));
+            lines.push(Line::from(format!(
+                "GitHub range: {}...{} · {}",
+                info.base_ref, info.head_ref, info.state
+            )));
+            lines.push(Line::from(Span::styled(&info.url, Style::new().fg(ACCENT))));
+            lines.push(Line::from(
+                "The PR exists, but the selected local range has no diff.",
+            ));
+        }
+        PullRequestStatus::NotFound => {
+            lines.push(Line::from(Span::styled(
+                format!("No GitHub PR found for review head {review_head}."),
+                Style::new().fg(YELLOW).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(
+                "Use an explicit BASE...HEAD range if you meant to review another branch.",
+            ));
+        }
+        PullRequestStatus::Unavailable(reason) => {
+            lines.push(Line::from(Span::styled(
+                "GitHub PR status is unavailable.",
+                Style::new().fg(YELLOW).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(reason, Style::new().fg(MUTED))));
+            lines.push(Line::from(
+                "The local range is still valid; install/authenticate gh to distinguish PR state.",
+            ));
+        }
+        PullRequestStatus::NotChecked => {}
+    }
+    let border = if app.focus == Focus::Diff {
+        ACCENT
+    } else {
+        MUTED
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::new()
+                    .title(" Empty review range ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(border)),
+            ),
+        area,
     );
 }
 

@@ -1,9 +1,11 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -30,6 +32,25 @@ pub struct Repository {
 
 #[derive(Debug, Clone)]
 pub struct GitCli;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestInfo {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub url: String,
+    pub base_ref: String,
+    pub head_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullRequestStatus {
+    NotChecked,
+    Checking,
+    Found(PullRequestInfo),
+    NotFound,
+    Unavailable(String),
+}
 
 impl GitCli {
     pub async fn discover(
@@ -106,6 +127,47 @@ impl GitCli {
     pub async fn worktrees(repo: &Repository) -> Result<Vec<Worktree>> {
         let text = run_text(&repo.root, ["worktree", "list", "--porcelain"]).await?;
         Ok(parse_porcelain(&text))
+    }
+
+    pub fn detect_pull_request(repo: Repository, tx: mpsc::Sender<WorkerEvent>) {
+        tokio::spawn(async move {
+            let target = if repo.head == "HEAD" {
+                repo.branch.clone()
+            } else {
+                repo.head.clone()
+            };
+            if target.is_empty() {
+                let _ = tx
+                    .send(WorkerEvent::PullRequestStatusReady(
+                        PullRequestStatus::Unavailable("detached HEAD".into()),
+                    ))
+                    .await;
+                return;
+            }
+
+            let mut command = Command::new("gh");
+            command
+                .current_dir(&repo.root)
+                .args(["pr", "view"])
+                .arg(&target)
+                .args(["--json", "number,title,state,url,baseRefName,headRefName"])
+                .kill_on_drop(true);
+            let status = match tokio::time::timeout(Duration::from_secs(5), command.output()).await
+            {
+                Ok(Ok(output)) if output.status.success() => parse_pull_request(&output.stdout)
+                    .map(PullRequestStatus::Found)
+                    .unwrap_or_else(|error| PullRequestStatus::Unavailable(error.to_string())),
+                Ok(Ok(output)) => classify_pull_request_failure(&output.stderr),
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    PullRequestStatus::Unavailable("gh is not installed".into())
+                }
+                Ok(Err(error)) => {
+                    PullRequestStatus::Unavailable(format!("failed to start gh: {error}"))
+                }
+                Err(_) => PullRequestStatus::Unavailable("gh PR lookup timed out".into()),
+            };
+            let _ = tx.send(WorkerEvent::PullRequestStatusReady(status)).await;
+        });
     }
 
     pub fn stream_diff(
@@ -314,10 +376,56 @@ pub enum WorkerEvent {
     SearchFinished {
         generation: u64,
     },
+    PullRequestStatusReady(PullRequestStatus),
     Failed {
         generation: u64,
         message: String,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhPullRequest {
+    number: u64,
+    title: String,
+    state: String,
+    url: String,
+    base_ref_name: String,
+    head_ref_name: String,
+}
+
+fn parse_pull_request(bytes: &[u8]) -> Result<PullRequestInfo> {
+    let value: GhPullRequest = serde_json::from_slice(bytes).context("invalid gh PR response")?;
+    Ok(PullRequestInfo {
+        number: value.number,
+        title: value.title,
+        state: value.state,
+        url: value.url,
+        base_ref: value.base_ref_name,
+        head_ref: value.head_ref_name,
+    })
+}
+
+fn classify_pull_request_failure(stderr: &[u8]) -> PullRequestStatus {
+    let output = String::from_utf8_lossy(stderr);
+    let message = output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("no pull requests found")
+        || normalized.contains("could not resolve to a pull request")
+    {
+        PullRequestStatus::NotFound
+    } else {
+        PullRequestStatus::Unavailable(if message.is_empty() {
+            "gh could not determine PR status".into()
+        } else {
+            message
+        })
+    }
 }
 
 async fn detect_base(root: &Path) -> Result<String> {
@@ -381,11 +489,36 @@ async fn run_bytes<const N: usize>(root: &Path, args: [&str; N]) -> Result<Vec<u
 
 #[cfg(test)]
 mod tests {
-    use super::SearchResult;
+    use super::{
+        PullRequestStatus, SearchResult, classify_pull_request_failure, parse_pull_request,
+    };
     #[test]
     fn parses_search_result() {
         let result = SearchResult::parse("src/lib.rs:42:7:needle here").unwrap();
         assert_eq!(result.line, 42);
         assert_eq!(result.text, "needle here");
+    }
+
+    #[test]
+    fn parses_pull_request_result() {
+        let info = parse_pull_request(
+            br#"{"number":42,"title":"Clear empty state","state":"OPEN","url":"https://example.invalid/42","baseRefName":"main","headRefName":"empty-state"}"#,
+        )
+        .unwrap();
+        assert_eq!(info.number, 42);
+        assert_eq!(info.base_ref, "main");
+        assert_eq!(info.head_ref, "empty-state");
+    }
+
+    #[test]
+    fn distinguishes_missing_pr_from_lookup_failure() {
+        assert_eq!(
+            classify_pull_request_failure(b"no pull requests found for branch"),
+            PullRequestStatus::NotFound
+        );
+        assert!(matches!(
+            classify_pull_request_failure(b"HTTP 503"),
+            PullRequestStatus::Unavailable(_)
+        ));
     }
 }

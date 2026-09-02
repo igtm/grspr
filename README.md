@@ -26,6 +26,7 @@ Implemented:
 - persistent Viewed/Reviewed state
 - worktree list and context switching
 - keyboard and basic mouse navigation
+- an explicit empty state that distinguishes an existing PR, no PR, and unavailable PR lookup
 
 Side-by-side diff, inline comments, GitHub API integration, and worktree creation are planned after the local review loop is hardened.
 
@@ -33,6 +34,7 @@ Side-by-side diff, inline comments, GitHub API integration, and worktree creatio
 
 - Git
 - ripgrep (`rg`) for repository text search
+- GitHub CLI (`gh`) is optional and only used to identify PR status for an empty diff
 - a terminal with 256-color or true-color support
 
 ## Install

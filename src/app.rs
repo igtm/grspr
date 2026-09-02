@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cli::Cli,
     diff::{ChangeKind, ChangedFile, DiffDocument},
-    git::{GitCli, Repository, SearchResult, WorkerEvent},
+    git::{GitCli, PullRequestStatus, Repository, SearchResult, WorkerEvent},
     review::{ReviewState, ReviewStatus, ReviewStore},
     ui,
     worktree::Worktree,
@@ -65,6 +65,7 @@ pub struct App {
     pub preview_lines: Vec<String>,
     pub preview_scroll: usize,
     pub terminal_size: Size,
+    pub pull_request_status: PullRequestStatus,
     tx: mpsc::Sender<WorkerEvent>,
     rx: mpsc::Receiver<WorkerEvent>,
     review_store: ReviewStore,
@@ -111,6 +112,7 @@ impl App {
             preview_lines: Vec::new(),
             preview_scroll: 0,
             terminal_size: Size::default(),
+            pull_request_status: PullRequestStatus::NotChecked,
             tx,
             rx,
             review_store,
@@ -120,6 +122,14 @@ impl App {
             diff_cancel: CancellationToken::new(),
             search_cancel: CancellationToken::new(),
         };
+        if app.files.is_empty() {
+            app.pull_request_status = PullRequestStatus::Checking;
+            app.status = format!(
+                "No diff in {}...{} · checking PR…",
+                app.repo.base, app.repo.head
+            );
+            GitCli::detect_pull_request(app.repo.clone(), app.tx.clone());
+        }
         app.mark_viewed();
         app.request_diff();
         Ok(app)
@@ -431,6 +441,28 @@ impl App {
             }
             WorkerEvent::SearchFinished { generation } if generation == self.search_generation => {
                 self.status = format!("{} matches", self.search_results.len())
+            }
+            WorkerEvent::PullRequestStatusReady(status) => {
+                self.status = match &status {
+                    PullRequestStatus::Found(info) => {
+                        format!("PR #{} exists · selected range has no diff", info.number)
+                    }
+                    PullRequestStatus::NotFound => {
+                        let head = if self.repo.head == "HEAD" {
+                            &self.repo.branch
+                        } else {
+                            &self.repo.head
+                        };
+                        format!("No PR for {head} · selected range has no diff")
+                    }
+                    PullRequestStatus::Unavailable(_) => {
+                        format!("No diff in {}...{}", self.repo.base, self.repo.head)
+                    }
+                    PullRequestStatus::NotChecked | PullRequestStatus::Checking => {
+                        self.status.clone()
+                    }
+                };
+                self.pull_request_status = status;
             }
             WorkerEvent::Failed { message, .. } => {
                 self.loading = false;
